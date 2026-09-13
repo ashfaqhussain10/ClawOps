@@ -12,7 +12,7 @@ import {
   GetMetricStatisticsCommand,
 } from "@aws-sdk/client-cloudwatch";
 
-import type { InstanceMetrics, MonitorReport, HealthCheck } from "../types";
+import type { InstanceMetrics, MonitorReport, HealthCheck, SessionCredentials } from "../types";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -144,21 +144,60 @@ export async function monitorInstances(): Promise<MonitorReport> {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 //
-// These run with whatever credentials the process holds. Under the target
-// design the agent's own role cannot call stop/terminate at all — those need
-// short-lived credentials minted by the broker after a human approves.
+// A write never runs on the ambient (read-only) credentials — AWS would refuse
+// it, and that refusal is the design. The caller passes the session credential
+// the broker minted after a human approved this exact action on this exact
+// instance. A fresh client is built from it and discarded afterwards.
 
-export async function rebootInstance(instanceId: string): Promise<string> {
-  await ec2.send(new RebootInstancesCommand({ InstanceIds: [instanceId] }));
-  return `Reboot initiated for ${instanceId}`;
+export type WriteAction = "ec2:StopInstances" | "ec2:StartInstances" | "ec2:RebootInstances";
+
+export interface ActionResult {
+  previousState: string | null;
+  currentState: string;
 }
 
-export async function startInstance(instanceId: string): Promise<string> {
-  await ec2.send(new StartInstancesCommand({ InstanceIds: [instanceId] }));
-  return `Start initiated for ${instanceId}`;
+export async function executeAction(
+  action: WriteAction,
+  instanceId: string,
+  credentials: SessionCredentials,
+): Promise<ActionResult> {
+  const client = new EC2Client({
+    region: REGION,
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      sessionToken: credentials.sessionToken,
+    },
+  });
+
+  try {
+    switch (action) {
+      case "ec2:StopInstances": {
+        const out = await client.send(new StopInstancesCommand({ InstanceIds: [instanceId] }));
+        return transition(out.StoppingInstances?.[0], "stopping");
+      }
+      case "ec2:StartInstances": {
+        const out = await client.send(new StartInstancesCommand({ InstanceIds: [instanceId] }));
+        return transition(out.StartingInstances?.[0], "pending");
+      }
+      case "ec2:RebootInstances": {
+        // RebootInstances returns no state change; the instance reports
+        // "running" throughout, so name the transition ourselves.
+        await client.send(new RebootInstancesCommand({ InstanceIds: [instanceId] }));
+        return { previousState: "running", currentState: "rebooting" };
+      }
+    }
+  } finally {
+    client.destroy();
+  }
 }
 
-export async function stopInstance(instanceId: string): Promise<string> {
-  await ec2.send(new StopInstancesCommand({ InstanceIds: [instanceId] }));
-  return `Stop initiated for ${instanceId}`;
+function transition(
+  change: { PreviousState?: { Name?: string }; CurrentState?: { Name?: string } } | undefined,
+  fallback: string,
+): ActionResult {
+  return {
+    previousState: change?.PreviousState?.Name ?? null,
+    currentState: change?.CurrentState?.Name ?? fallback,
+  };
 }

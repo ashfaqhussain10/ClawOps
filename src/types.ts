@@ -25,3 +25,12 @@ export interface MonitorReport {
   hasAnomalies: boolean;
   summary: string;
 }
+
+/** Temporary AWS credentials minted by the broker after a human approval. */
+export interface SessionCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+  /** ISO-8601. Fifteen minutes from minting. */
+  expiration: string;
+}
