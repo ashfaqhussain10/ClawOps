@@ -1,16 +1,26 @@
 // Talks to the approval broker running on the host.
 //
-// This deliberately uses node:http, not fetch. NanoClaw starts every agent
+// The broker call must bypass the egress proxy. NanoClaw starts every agent
 // container with HTTP_PROXY / HTTPS_PROXY and NODE_USE_ENV_PROXY=1 supplied by
-// OneCLI, so that calls to third-party APIs are routed through the credential
-// gateway. fetch obeys those variables; a host-internal call to the broker
-// must not, because the gateway does not forward it. http.request never
-// consults proxy environment variables.
+// OneCLI, so that calls to third-party APIs are routed through its credential
+// gateway. The gateway does not forward host-internal traffic: it resets the
+// connection (ECONNRESET), and the broker never sees the request.
+//
+// Since Node 22.21 / 24.5, NODE_USE_ENV_PROXY=1 applies to node:http as well as
+// fetch: http.globalAgent is built from the proxy variables at startup, and
+// host.docker.internal is not in NO_PROXY. So the request below uses its own
+// http.Agent. A fresh agent has no proxy configuration and always connects
+// directly. (Verified inside the agent container on Node 22.23.2: the default
+// agent gets ECONNRESET, a fresh agent gets 200.) This also keeps the minted
+// credentials in the broker's reply from passing through the gateway.
 
 import http from "node:http";
 import { URL } from "node:url";
 
 import type { SessionCredentials } from "../types";
+
+/** Direct connections only: never inherits proxy settings from the environment. */
+const directAgent = new http.Agent();
 
 export interface ActionRequest {
   action: string;
@@ -47,8 +57,9 @@ export interface BrokerOptions {
 export const DEFAULT_BROKER_URL = "http://host.docker.internal:3001";
 
 /**
- * The broker blocks until the approver's phone answers or Auth0 gives up
- * (300 s). Allow that plus margin — and never hang forever.
+ * The broker blocks until the approver's phone answers: up to 120 s per push,
+ * and two pushes when the usage guard asks for a second confirmation. Allow
+ * that plus margin, but never hang forever.
  */
 export const DEFAULT_TIMEOUT_MS = 330_000;
 
@@ -68,6 +79,7 @@ export function requestAction(
       endpoint,
       {
         method: "POST",
+        agent: directAgent,
         headers: {
           "Content-Type": "application/json",
           "Content-Length": body.length,
