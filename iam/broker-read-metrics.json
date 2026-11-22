@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "UsageGuardReadsMetrics",
+      "Effect": "Allow",
+      "Action": ["cloudwatch:GetMetricData"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": { "aws:RequestedRegion": "ap-south-1" }
+      }
+    }
+  ]
+}

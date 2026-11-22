@@ -85,12 +85,23 @@ async function write(verb: WriteVerb, instanceId: string, reason: string): Promi
     requestedBy: REQUESTED_BY,
   });
 
-  if (outcome.status !== "approved") {
-    const detail =
-      outcome.status === "rejected" || outcome.status === "error"
-        ? outcome.error
-        : REFUSALS[outcome.status];
-    refuse({ error: outcome.status, detail });
+  switch (outcome.status) {
+    case "approved":
+      break;
+    case "rejected":
+    case "error":
+      return refuse({ error: outcome.status, detail: outcome.error });
+    default: {
+      const atUsageCheck = outcome.stage === "high-usage-confirmation";
+      return refuse({
+        error: outcome.status,
+        detail: atUsageCheck
+          ? `Refused at the high-resource-usage confirmation: the instance looked busy and a critical workload may be running. ${REFUSALS[outcome.status]}`
+          : REFUSALS[outcome.status],
+        ...(outcome.stage ? { stage: outcome.stage } : {}),
+        ...(outcome.warnings ? { warnings: outcome.warnings } : {}),
+      });
+    }
   }
 
   const result = await executeAction(action, instanceId, outcome.credentials);
@@ -103,6 +114,9 @@ async function write(verb: WriteVerb, instanceId: string, reason: string): Promi
     approvedBy: outcome.approvedBy,
     planId: outcome.planId,
     credentialExpiresAt: outcome.expiresAt,
+    ...(outcome.warnings
+      ? { warnings: outcome.warnings, note: "Approved after a high-resource-usage warning." }
+      : {}),
   });
 }
 

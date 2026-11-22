@@ -27,8 +27,15 @@ export type BrokerOutcome =
       approvedBy: string;
       credentials: SessionCredentials;
       expiresAt: string;
+      /** Present when the approver confirmed despite high resource usage. */
+      warnings?: string[];
     }
-  | { status: "denied" | "expired" | "busy" }
+  | {
+      status: "denied" | "expired" | "busy";
+      /** "high-usage-confirmation" when the refusal came at the second push. */
+      stage?: string;
+      warnings?: string[];
+    }
   | { status: "rejected" | "error"; error: string };
 
 export interface BrokerOptions {
@@ -136,12 +143,17 @@ export function parseOutcome(json: unknown, httpStatus: number): BrokerOutcome {
           expiration,
         },
         expiresAt: String(o.expiresAt ?? expiration),
+        ...warningsOf(o),
       };
     }
     case "denied":
     case "expired":
     case "busy":
-      return { status: o.status };
+      return {
+        status: o.status,
+        ...(typeof o.stage === "string" ? { stage: o.stage } : {}),
+        ...warningsOf(o),
+      };
     case "rejected":
     case "error":
       return { status: o.status, error: String(o.error ?? `HTTP ${httpStatus}`) };
@@ -150,4 +162,12 @@ export function parseOutcome(json: unknown, httpStatus: number): BrokerOutcome {
         `broker returned an unknown status ${JSON.stringify(o.status)} (HTTP ${httpStatus})`,
       );
   }
+}
+
+/** Keeps the usage-guard warnings only if the broker sent a non-empty list of strings. */
+function warningsOf(o: Record<string, unknown>): { warnings?: string[] } {
+  const w = o.warnings;
+  return Array.isArray(w) && w.length > 0 && w.every((x) => typeof x === "string")
+    ? { warnings: w as string[] }
+    : {};
 }
